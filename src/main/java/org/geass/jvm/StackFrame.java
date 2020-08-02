@@ -69,4 +69,12 @@ public class StackFrame {
     public Object popFromOperandStack() {
         return operandStack.pop();
     }
+
+    public Object[] getLocalVariables() {
+        return localVariables;
+    }
+
+    public void setCurrentInstructionIndex(int currentInstructionIndex) {
+        this.currentInstructionIndex = currentInstructionIndex;
+    }
 }
