@@ -8,3 +8,5 @@
 ## [使用Java NIO的方式实现一个简易版的RPC的Demo](https://github.com/ArchGeass/show/tree/NIO_Dubbo_Demo)
 
 ## [基于SpringBoot, 实现自定义注解及其解析器](https://github.com/ArchGeass/show/tree/spring-boot-starter)
+
+## [根据JVM指令,使用Java实现一个迷你JVM](https://github.com/ArchGeass/show/tree/MINI-JVM)
