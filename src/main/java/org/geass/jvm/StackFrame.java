@@ -35,12 +35,13 @@ public class StackFrame {
     /**
      * 运行的Class文件
      */
-    private ClassFile classFile;
+//    private ClassFile classFile;
+    private MiniJVMClass klass;
 
-    public StackFrame(Object[] localVariables, MethodInfo methodInfo, ClassFile classFile) {
+    public StackFrame(Object[] localVariables, MethodInfo methodInfo, MiniJVMClass klass) {
         this.localVariables = localVariables;
         this.methodInfo = methodInfo;
-        this.classFile = classFile;
+        this.klass = klass;
     }
 
     public MethodInfo getMethodInfo() {
@@ -51,8 +52,12 @@ public class StackFrame {
         return operandStack;
     }
 
+    public MiniJVMClass getKlass() {
+        return klass;
+    }
+
     public ClassFile getClassFile() {
-        return classFile;
+        return klass.getClassFile();
     }
 
     public Instruction getNextInstruction() {
@@ -76,5 +81,17 @@ public class StackFrame {
 
     public void setCurrentInstructionIndex(int currentInstructionIndex) {
         this.currentInstructionIndex = currentInstructionIndex;
+    }
+
+    public Object peekOperandStack() {
+        return operandStack.peek();
+    }
+
+    public void astore(int i) {
+        localVariables[i] = operandStack.pop();
+    }
+
+    public void aload(int i) {
+        operandStack.push(localVariables[i]);
     }
 }

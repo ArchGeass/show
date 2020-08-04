@@ -1,20 +1,19 @@
 package org.geass.jvm;
 
-import org.geass.classpy.classfile.ClassFile;
-import org.geass.classpy.classfile.ClassFileParser;
 import org.geass.classpy.classfile.MethodInfo;
 import org.geass.classpy.classfile.bytecode.Bipush;
 import org.geass.classpy.classfile.bytecode.Instruction;
+import org.geass.classpy.classfile.bytecode.InstructionCp1;
 import org.geass.classpy.classfile.bytecode.InstructionCp2;
 import org.geass.classpy.classfile.constant.*;
+import org.geass.classpy.classfile.datatype.U1CpIndex;
+import org.geass.classpy.common.FilePart;
 
 import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
 import java.util.List;
-import java.util.Objects;
 import java.util.Stack;
-import java.util.stream.Stream;
+
+import static org.geass.jvm.MiniJVMClassLoader.EXT_CLASSLOADER;
 
 /**
  * @Description: 一个用来学习的JVM
@@ -26,12 +25,12 @@ public class MiniJVM {
     /**
      * 启动主类文件
      */
-    private String mainClass;
+    private String mainClassName;
 
     /**
      * java -cp classPath[]
      */
-    private String[] classPathEntries;
+    private MiniJVMClassLoader appClassLoader;
 
     /**
      * 使用指定的classPath,mainClass创建JVM
@@ -39,24 +38,33 @@ public class MiniJVM {
      * @param classPath 启动时的classpath,使用{@link java.io.File#pathSeparator}分隔符,支持文件夹不支持压缩包
      */
     public MiniJVM(String classPath, String mainClass) {
-        this.mainClass = mainClass;
-        this.classPathEntries = classPath.split(File.pathSeparator);
+        this.mainClassName = mainClass;
+        this.appClassLoader =
+                new MiniJVMClassLoader(classPath.split(File.pathSeparator),
+                        EXT_CLASSLOADER);
     }
 
     /**
      * 启动并运行Mini-JVM
      */
     public void start() {
-        ClassFile mainClassFile = loadClassFromClassPath(mainClass);
+        //ClassFile mainClassFile = loadClassFromClassPath(mainClassName);//此处改用自己实现的classLoader
+        MiniJVMClass mainClass = null;
+        try {
+            mainClass = appClassLoader.loadClass(mainClassName);
+        } catch (ClassNotFoundException e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        }
         //简单起见忽略校验部分
-        MethodInfo mainMethod = mainClassFile.getMethod("main").get(0);
+        MethodInfo mainMethod = mainClass.getMethod("main").get(0);
         //创建main方法栈
         Stack<StackFrame> mainMethodStack = new Stack<>();
         //局部变量长度由栈最大深度决定
-        Object[] localVariablesForMainStrackFrame = new Object[mainMethod.getMaxStack()];
+        Object[] localVariablesForMainStrackFrame = new Object[mainMethod.getMaxLocals()];
         localVariablesForMainStrackFrame[0] = null;
         //将main方法推入栈顶
-        mainMethodStack.push(new StackFrame(localVariablesForMainStrackFrame, mainMethod, mainClassFile));
+        mainMethodStack.push(new StackFrame(localVariablesForMainStrackFrame, mainMethod, mainClass));
         PCRegister pcRegister = new PCRegister(mainMethodStack);
         while (true) {
             Instruction instruction = pcRegister.getNextInstruction();
@@ -67,7 +75,7 @@ public class MiniJVM {
             //pcRegister.methodStack.get(0).getMethodInfo().getCode()
             switch (instruction.getOpcode()) {
                 case getstatic:  //#2->java/lang/System.out:
-                    getstaticImpl(mainClassFile, pcRegister, instruction);
+                    getstaticImpl(pcRegister, instruction);
                     break;
                 case invokestatic:  //#3->org/geass/jvm/SimpleClass.foo:
                     invokestaticImpl(mainMethodStack, pcRegister, instruction);
@@ -111,10 +119,97 @@ public class MiniJVM {
                 case imul:
                     imulImpl(pcRegister);
                     break;
+                case _new:
+                    newImpl(pcRegister, instruction);
+                    break;
+                case dup:
+                    dupImpl(pcRegister);
+                    break;
+                case invokespecial:
+                    invokespecialImpl(pcRegister);
+                    break;
+                case astore_1:
+                    astoreImpl(pcRegister, 1);
+                    break;
+                case astore_2:
+                    astoreImpl(pcRegister, 2);
+                    break;
+                case aload_1:
+                    aloadImpl(pcRegister, 1);
+                    break;
+                case aload_2:
+                    aloadImpl(pcRegister, 2);
+                    break;
+                case ldc:
+                    ldcImpl(pcRegister, instruction);
+                    break;
+                case checkcast:
+                    checkcastImpl(pcRegister, instruction);
+                    break;
                 default:
                     throw new IllegalStateException("Opcode " + instruction + " not implemented yet!");
             }
         }
+    }
+
+    private void checkcastImpl(PCRegister pcRegister, Instruction instruction) {
+        String className = getClassNameFromNewOrCheckcastInstruction(instruction, pcRegister.getTopFrameClassConstantPool())
+                .replace('/', '.');
+        StackFrame topFrame = pcRegister.getTopFrame();
+        MiniJVMClass targetClass = null;
+        try {
+            targetClass = topFrame.getKlass().getClassLoader().loadClass(className);
+        } catch (ClassNotFoundException e) {
+            e.printStackTrace();
+        }
+        MiniJVMObject objectOnStack = (MiniJVMObject) topFrame.peekOperandStack();
+        if (!objectOnStack.getKlass().getName().equals(targetClass.getName())
+                || objectOnStack.getKlass().getClassLoader() != targetClass.getClassLoader()) {
+            throw new ClassCastException("Can't cast type " + objectOnStack.getKlass().getName() +
+                    " to type " + targetClass.getName());
+        }
+    }
+
+    private void ldcImpl(PCRegister pcRegister, Instruction instruction) {
+        FilePart filePart = InstructionCp1.class.cast(instruction).getParts().get(1);
+        int constantPoolIndex = ((U1CpIndex) filePart).getValue();
+        String s = pcRegister.getTopFrameClassConstantPool().getConstantDesc(constantPoolIndex);
+        pcRegister.getTopFrame().pushObjectToOperandStack(s);
+    }
+
+    private void aloadImpl(PCRegister pcRegister, int i) {
+        pcRegister.getTopFrame().aload(i);
+    }
+
+    private void astoreImpl(PCRegister pcRegister, int i) {
+        pcRegister.getTopFrame().astore(i);
+    }
+
+    private void invokespecialImpl(PCRegister pcRegister) {
+        pcRegister.getTopFrame().popFromOperandStack();
+    }
+
+    private void dupImpl(PCRegister pcRegister) {
+        StackFrame topFrame = pcRegister.getTopFrame();
+        topFrame.pushObjectToOperandStack(topFrame.peekOperandStack());
+    }
+
+    private void newImpl(PCRegister pcRegister, Instruction instruction) {
+        try {
+            String className = getClassNameFromNewInstruction(instruction, pcRegister.getTopFrameClassConstantPool());
+            MiniJVMClass klass = pcRegister.getTopFrame().getKlass().getClassLoader().loadClass(className);
+            //此处简单期间去实现构造器的调用
+            pcRegister.getTopFrame().pushObjectToOperandStack(klass.newInstance());
+        } catch (ClassNotFoundException e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        }
+    }
+
+    private String getClassNameFromNewInstruction(Instruction instruction, ConstantPool constantPool) {
+        int targetClassIndex = InstructionCp2.class.cast(instruction).getTargetClassIndex();
+        ConstantClassInfo classInfo = constantPool.getClassInfo(targetClassIndex);
+        return constantPool.getUtf8String(classInfo.getNameIndex());
     }
 
     /**
@@ -254,6 +349,23 @@ public class MiniJVM {
             //从操作数上弹出this指针
             pcRegister.getTopFrame().popFromOperandStack();
             System.out.println(param);
+        } else if ("org/geass/jvm/MyClassLoader".equals(className)
+                && "loadClass".equals(methodName)) {
+            StackFrame topFrame = pcRegister.getTopFrame();
+            String classNameParam = (String) topFrame.popFromOperandStack();
+            MiniJVMObject thisObject = (MiniJVMObject) topFrame.popFromOperandStack();
+            MiniJVMClass klass = null;
+            try {
+                klass = ((MyClassLoader) thisObject.getRealJavaObject()).loadClass(classNameParam);
+            } catch (ClassNotFoundException e) {
+                e.printStackTrace();
+            }
+            topFrame.pushObjectToOperandStack(klass);
+        } else if ("org/geass/jvm/MiniJVMClass".equals(className)
+                && "newInstance".equals(methodName)) {
+            StackFrame topFrame = pcRegister.getTopFrame();
+            MiniJVMClass thisObject = (MiniJVMClass) topFrame.popFromOperandStack();
+            topFrame.pushObjectToOperandStack(thisObject.newInstance());
         } else {
             throw new IllegalStateException("Not implemented yet!");
         }
@@ -288,7 +400,14 @@ public class MiniJVM {
         ConstantPool constantPool = pcRegister.getTopFrameClassConstantPool();
         String className = getClassNameFromInvokeInstruction(instruction, constantPool);
         String methodName = getMethodNameFromInvokeInstruction(instruction, constantPool);
-        ClassFile classFile = loadClassFromClassPath(className);
+//        ClassFile classFile = loadClassFromClassPath(className);
+        MiniJVMClass classFile = null;
+        try {
+            classFile = appClassLoader.loadClass(className);
+        } catch (ClassNotFoundException e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        }
         MethodInfo targetMethodInfo = classFile.getMethod(methodName).get(0);
         //targetMethodInfo.getMaxLocals()用于获取实际传参的长度
         Object[] localVariables = new Object[targetMethodInfo.getMaxLocals()];
@@ -304,7 +423,7 @@ public class MiniJVM {
         mainMethodStack.push(newFrame);
     }
 
-    private void getstaticImpl(ClassFile mainClassFile, PCRegister pcRegister, Instruction instruction) {
+    private void getstaticImpl(PCRegister pcRegister, Instruction instruction) {
         //拿到System.out的指令
         int fieldIndex = InstructionCp2.class.cast(instruction).getTargetFieldIndex();
         ConstantPool constantPool = pcRegister.getTopFrameClassConstantPool();
@@ -325,6 +444,12 @@ public class MiniJVM {
         }
     }
 
+    private String getClassNameFromNewOrCheckcastInstruction(Instruction instruction, ConstantPool constantPool) {
+        int targetClassIndex = InstructionCp2.class.cast(instruction).getTargetClassIndex();
+        ConstantClassInfo classInfo = constantPool.getClassInfo(targetClassIndex);
+        return constantPool.getUtf8String(classInfo.getNameIndex());
+    }
+
     private String getClassNameFromInvokeInstruction(Instruction instruction, ConstantPool constantPool) {
         int methodIndex = InstructionCp2.class.cast(instruction).getTargetMethodIndex();
         ConstantMethodrefInfo methodrefInfo = constantPool.getMethodrefInfo(methodIndex);
@@ -339,13 +464,13 @@ public class MiniJVM {
         return methodrefInfo.getMethodNameAndType(constantPool).getName(constantPool);
     }
 
-    /**
+    /*
      * 从classpath上加载class
-     *
+     * 使用自定义classLoader就不需要了
      * @param fqcn {fullQualifiedClassName}全限定类名
      * @return class字节码文件
-     */
-    private ClassFile loadClassFromClassPath(String fqcn) {
+     *
+     private ClassFile loadClassFromClassPath(String fqcn) {
         return (ClassFile) Stream.of(classPathEntries)
                 .map(entry -> tryLoad(entry, fqcn))
                 .filter(Objects::nonNull)
@@ -361,11 +486,13 @@ public class MiniJVM {
         } catch (IOException e) {
             return null;
         }
-    }
-
+    }*/
     public static void main(String[] args) {
+/*
         new MiniJVM("target/classes", "org.geass.jvm.SimpleClass").start();
         new MiniJVM("target/classes", "org.geass.jvm.BranchClass").start();
         new MiniJVM("target/classes", "org.geass.jvm.RecursiveClass").start();
+*/
+        new MiniJVM("target/classes", "org.geass.jvm.SimpleClassLoaderClass").start();
     }
 }
